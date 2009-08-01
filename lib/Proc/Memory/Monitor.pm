@@ -6,31 +6,147 @@ package Proc::Memory::Monitor;
 # $Revision$, $HeadURL$, $Date$
 # $Revision$, $Source$, $Date$
 
-use strict;
+use Moose;
 use warnings;
 use version;
 use Carp;
-use Scalar::Util;
-use List::Util;
-#use List::MoreUtils;
 use Data::Dumper qw/Dumper/;
 use English qw/ -no_match_vars /;
-use base qw/Exporter/;
+use Proc::ProcessTable;
+use Log::Deep;
 
 our $VERSION     = version->new('0.0.1');
 our @EXPORT_OK   = qw//;
 our %EXPORT_TAGS = ();
-#our @EXPORT      = qw//;
 
-sub new {
-	my $caller = shift;
-	my $class  = ref $caller ? ref $caller : $caller;
-	my %param  = @_;
-	my $self   = \%param;
+has parent => (
+	is  => 'rw',
+	isa => 'Int',
+);
+has max => (
+	is      => 'rw',
+	isa     => 'Num',
+	default => 10,
+);
+has pause => (
+	is      => 'rw',
+	isa     => 'Int',
+	default => 10,
+);
+has verbose => (
+	is  => 'rw',
+	isa => 'Bool',
+);
 
-	bless $self, $class;
+sub monitor {
+	my ($self, $action) = @_;
+	my $count = 0;
+	my $zero_mem = 0;
+	my $log = Log::Deep->new( -level => 'debug' );
 
-	return $self;
+	$self->parent($$);
+
+	# return the parent process
+	my $child = fork;
+	return $child if $child;
+
+	# start to monitor the parent process
+	while (1) {
+		my $pid_tree = $self->_pid_tree();
+
+		my $mem_usage = $self->_pid_branch_memory($pid_tree->{$self->parent});
+		$log->debug({ parent_pid => $self->parent }, $mem_usage);
+		warn "\n\nMemory Usage = $mem_usage\%\n\n\n" if $count++ % 2 == 0;
+
+		if ( $mem_usage > $self->max ) {
+			# check if there is a action to be performed or if we should kill the parent
+			if ( $action && ref $action eq 'CODE' ) {
+				my $ans = $action->($mem_usage, $self);
+
+				# exit monitoring unless asked to keep monitoring.
+				last if !$ans;
+			}
+			else {
+				$self->_pid_branch_kill($pid_tree->{$self->parent});
+			}
+		}
+		elsif ( $mem_usage eq 0 ) {
+			if ( $zero_mem++ > 10 * 60 / $self->pause ) {
+				$self->_pid_branch_kill($pid_tree->{$self->parent});
+				return;
+			}
+		}
+		else {
+			$zero_mem = 0;
+		}
+
+		# check if everything has finished
+		if ( $pid_tree->{$self->parent}{children}
+			&& @{ $pid_tree->{$self->parent}{children} } == 1
+			&& !defined $pid_tree->{$self->parent}{mem}
+		) {
+			# we appear to have stopped
+			warn "No processes appear to be running!\n" if $self->verbose;
+			last;
+		}
+
+		sleep $self->pause;
+	}
+
+	# exit here rather than returning as returning would probably not be what is expected
+	exit 0;
+}
+
+# builds a tree of processes and their children
+sub _pid_tree {
+	my $procs = Proc::ProcessTable->new;
+	my %tree;
+
+	PROC:
+	for my $proc ( @{$procs->table} ) {
+		$tree{$proc->pid} ||= { pid => $proc->pid, children => [] };
+		$tree{$proc->pid}{mem} = $proc->pctmem;
+
+		# append this process to its parent (if it has one)
+		if ( $proc->pid != $proc->pgrp ) {
+			$tree{$proc->pgrp} ||= { pid => $proc->pgrp, children => [] };
+			push @{ $tree{$proc->pgrp}{children} }, $tree{$proc->pid};
+		}
+	}
+
+	return \%tree;
+}
+
+# kills all child processes of $pid (but not $pid itself)
+sub _pid_branch_kill {
+	my ($self, $tree) = @_;
+
+	confess Dumper $tree if !ref $tree || !ref $tree->{children};
+
+	for my $child ( @{ $tree->{children} } ) {
+		# kill any children
+		$self->_pid_branch_kill($child);
+	}
+
+	# kill the process (unless it is this process)
+	kill $tree->{pid} if $tree->{pid} != $$;
+
+	return;
+}
+
+# counts the percentage memory usage of pid and it's children
+sub _pid_branch_memory {
+	my ($self, $tree) = @_;
+	my $total = 0;
+
+	for my $child ( @{ $tree->{children} } ) {
+		# Count the childs memory
+		$total += $self->_pid_branch_memory($child);
+	}
+
+	$total += $tree->{mem} || 0;
+
+	return $total;
 }
 
 1;
@@ -39,93 +155,50 @@ __END__
 
 =head1 NAME
 
-Proc::Memory::Monitor - <One-line description of module's purpose>
+Proc::Memory::Monitor - Monitors a processes memory usage and tries to kill
+it if it starts to use too much memory.
 
 =head1 VERSION
 
 This documentation refers to Proc::Memory::Monitor version 0.1.
 
-
 =head1 SYNOPSIS
 
    use Proc::Memory::Monitor;
 
-   # Brief but working code example(s) here showing the most common usage(s)
-   # This section will be as far as many users bother reading, so make it as
-   # educational and exemplary as possible.
+   my $child = Proc::Memory::Monitor->new()->monitor();
 
+   # do potentially large memory opperations
 
 =head1 DESCRIPTION
 
-A full description of the module and its features.
-
-May include numerous subsections (i.e., =head2, =head3, etc.).
-
-
 =head1 SUBROUTINES/METHODS
 
-A separate section listing the public components of the module's interface.
+=head2 C<monitor ( [$action] )>
 
-These normally consist of either subroutines that may be exported, or methods
-that may be called on objects belonging to the classes that the module
-provides.
+Param: C<$action> - code ref - Optional sub to run when the maximum memory is reached
 
-Name the section accordingly.
+Return: The child pid of the monitor.
 
-In an object-oriented module, this section should begin with a sentence (of the
-form "An object of this class represents ...") to give the reader a high-level
-context to help them understand the methods that are subsequently described.
+Description: This forks the process monitoring code and return the child
+pid to parent process. While the child process continues running monitoring
+the parent process.
 
-
-=head3 C<new ( $search, )>
-
-Param: C<$search> - type (detail) - description
-
-Return: Proc::Memory::Monitor -
-
-Description:
-
-=cut
-
+When the $action sub is run it is passed two parameters, the first is the
+current memory usage of the process (and it's children) and the second
+parameter is a reference to the calling C<Proc::Memory::Monitor> object.
+If the return value is false then the memory monitor will stop exit, stopping
+further monitoring.
 
 =head1 DIAGNOSTICS
 
-A list of every error and warning message that the module can generate (even
-the ones that will "never happen"), with a full explanation of each problem,
-one or more likely causes, and any suggested remedies.
-
 =head1 CONFIGURATION AND ENVIRONMENT
-
-A full explanation of any configuration system(s) used by the module, including
-the names and locations of any configuration files, and the meaning of any
-environment variables or properties that can be set. These descriptions must
-also include details of any configuration language used.
 
 =head1 DEPENDENCIES
 
-A list of all of the other modules that this module relies upon, including any
-restrictions on versions, and an indication of whether these required modules
-are part of the standard Perl distribution, part of the module's distribution,
-or must be installed separately.
-
 =head1 INCOMPATIBILITIES
 
-A list of any modules that this module cannot be used in conjunction with.
-This may be due to name conflicts in the interface, or competition for system
-or program resources, or due to internal limitations of Perl (for example, many
-modules that use source code filters are mutually incompatible).
-
 =head1 BUGS AND LIMITATIONS
-
-A list of known problems with the module, together with some indication of
-whether they are likely to be fixed in an upcoming release.
-
-Also, a list of restrictions on the features the module does provide: data types
-that cannot be handled, performance issues and the circumstances in which they
-may arise, practical limitations on the size of data sets, special cases that
-are not (yet) handled, etc.
-
-The initial template usually just has:
 
 There are no known bugs in this module.
 
@@ -136,7 +209,6 @@ Patches are welcome.
 =head1 AUTHOR
 
 Ivan Wills - (ivan.wills@gmail.com)
-<Author name(s)>  (<contact address>)
 
 =head1 LICENSE AND COPYRIGHT
 
