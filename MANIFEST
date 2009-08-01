@@ -2,7 +2,15 @@ Build.PL
 Changes
 MANIFEST
 README
+bin/memmon
 lib/Proc/Memory/Monitor.pm
 t/00-load.t
 t/pod-coverage.t
 t/pod.t
+t/boilerplate.t
+t/critic.t
+t/kwalitee.t
+t/perlcriticrc
+t/spelling.t
+Makefile.PL
+META.yml
