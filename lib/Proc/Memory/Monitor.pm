@@ -155,8 +155,7 @@ __END__
 
 =head1 NAME
 
-Proc::Memory::Monitor - Monitors a processes memory usage and tries to kill
-it if it starts to use too much memory.
+Proc::Memory::Monitor - Monitors a processes memory usage and tries to kill it if it starts to use too much memory.
 
 =head1 VERSION
 
