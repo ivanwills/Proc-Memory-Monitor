@@ -2,7 +2,6 @@ Build.PL
 Changes
 MANIFEST
 META.yml
-Makefile.PL
 README
 lib/Proc/Memory/Monitor.pm
 t/00-load.t

@@ -24,7 +24,6 @@ my $builder = Module::Build->new(
         'Test::NoWarnings'   => 0,
     },
     add_to_cleanup     => [ 'Proc-Memory-Monitor-*' ],
-    create_makefile_pl => 'traditional',
     create_license     => 1,
     meta_merge         => {
         resources => {
